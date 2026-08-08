@@ -2,6 +2,7 @@ use std::io::Write;
 
 use chrono::Local;
 use chrono::TimeZone;
+use similar::ChangeTag;
 use termcolor::{Buffer, Color, ColorSpec, WriteColor};
 use termimad::MadSkin;
 
@@ -271,6 +272,22 @@ fn render_part(buf: &mut Buf, part: &Part) {
             call_id: _call_id,
             state,
         } => {
+            if tool == "edit"
+                && let (Some(file_path), Some(old_str), Some(new_str)) = (
+                    state.input.get("filePath").and_then(|v| v.as_str()),
+                    state.input.get("oldString").and_then(|v| v.as_str()),
+                    state.input.get("newString").and_then(|v| v.as_str()),
+                )
+            {
+                let replace_all = state
+                    .input
+                    .get("replaceAll")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                render_edit_diff(buf, file_path, old_str, new_str, replace_all);
+                return;
+            }
+
             let desc = state
                 .input
                 .get("description")
@@ -369,6 +386,40 @@ fn render_part(buf: &mut Buf, part: &Part) {
     }
 }
 
+fn render_edit_diff(
+    buf: &mut Buf,
+    file_path: &str,
+    old_str: &str,
+    new_str: &str,
+    replace_all: bool,
+) {
+    let diff = similar::TextDiff::from_lines(old_str, new_str);
+
+    buf.write_dim("│");
+    buf.write_reset(" ");
+    buf.write_fg_bold(Color::Yellow, "📝 ");
+    buf.write_fg_bold(Color::Cyan, file_path);
+    if replace_all {
+        buf.write_dim(" (replaceAll)");
+    }
+    buf.writeln("");
+
+    for change in diff.iter_all_changes() {
+        let (prefix, color) = match change.tag() {
+            ChangeTag::Delete => ("-", Color::Red),
+            ChangeTag::Insert => ("+", Color::Green),
+            ChangeTag::Equal => continue,
+        };
+        // similar 保留尾部换行符，去除后渲染
+        let line = change.value().trim_end_matches('\n');
+        buf.write_dim("│");
+        buf.write_reset("  ");
+        buf.write_fg_bold(color, prefix);
+        buf.write_fg(color, line);
+        buf.writeln("");
+    }
+}
+
 fn fmt_ts(ms: i64) -> String {
     match Local.timestamp_millis_opt(ms) {
         chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -427,6 +478,163 @@ mod tests {
         assert_eq!(fmt_num(42), "42");
         assert_eq!(fmt_num(1_500), "1.5K");
         assert_eq!(fmt_num(2_000_000), "2.0M");
+    }
+
+    #[test]
+    fn test_render_edit_diff() {
+        let json = r#"{
+            "info": {
+                "id": "ses_test",
+                "slug": "test",
+                "title": "Test",
+                "agent": "Sisyphus",
+                "model": { "id": "m", "providerID": "p" },
+                "version": "1.0.0",
+                "cost": 0.0,
+                "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+                "time": { "created": 0, "updated": 0 }
+            },
+            "messages": [
+                {
+                    "info": {
+                        "role": "assistant",
+                        "time": { "created": 0 },
+                        "agent": null,
+                        "model": null,
+                        "finish": null,
+                        "tokens": null,
+                        "cost": null,
+                        "id": null,
+                        "summary": { "diffs": [] }
+                    },
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "edit",
+                            "callID": "call_1",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "filePath": "/tmp/test.rs",
+                                    "oldString": "let x = 1;",
+                                    "newString": "let x = 2;"
+                                },
+                                "output": null
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = render_session(json).unwrap();
+        assert!(result.contains("📝"), "should show edit icon");
+        assert!(result.contains("/tmp/test.rs"), "should show file path");
+        assert!(result.contains("let x = 1;"), "should show old line");
+        assert!(result.contains("let x = 2;"), "should show new line");
+    }
+
+    #[test]
+    fn test_render_edit_diff_with_replace_all() {
+        let json = r#"{
+            "info": {
+                "id": "ses_test",
+                "slug": "test",
+                "title": "Test",
+                "agent": "Sisyphus",
+                "model": { "id": "m", "providerID": "p" },
+                "version": "1.0.0",
+                "cost": 0.0,
+                "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+                "time": { "created": 0, "updated": 0 }
+            },
+            "messages": [
+                {
+                    "info": {
+                        "role": "assistant",
+                        "time": { "created": 0 },
+                        "agent": null,
+                        "model": null,
+                        "finish": null,
+                        "tokens": null,
+                        "cost": null,
+                        "id": null,
+                        "summary": { "diffs": [] }
+                    },
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "edit",
+                            "callID": "call_1",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "filePath": "/tmp/test.rs",
+                                    "oldString": "foo",
+                                    "newString": "bar",
+                                    "replaceAll": true
+                                },
+                                "output": null
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = render_session(json).unwrap();
+        assert!(result.contains("replaceAll"), "should show replaceAll tag");
+    }
+
+    #[test]
+    fn test_render_non_edit_tool_unchanged() {
+        let json = r#"{
+            "info": {
+                "id": "ses_test",
+                "slug": "test",
+                "title": "Test",
+                "agent": "Sisyphus",
+                "model": { "id": "m", "providerID": "p" },
+                "version": "1.0.0",
+                "cost": 0.0,
+                "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+                "time": { "created": 0, "updated": 0 }
+            },
+            "messages": [
+                {
+                    "info": {
+                        "role": "assistant",
+                        "time": { "created": 0 },
+                        "agent": null,
+                        "model": null,
+                        "finish": null,
+                        "tokens": null,
+                        "cost": null,
+                        "id": null,
+                        "summary": { "diffs": [] }
+                    },
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "callID": "call_1",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "description": "run a command",
+                                    "command": "echo hello"
+                                },
+                                "output": "hello"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = render_session(json).unwrap();
+        assert!(result.contains("🔧"), "non-edit tool should show tool icon");
+        assert!(result.contains("echo hello"), "should show command");
     }
 
     #[test]
