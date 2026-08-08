@@ -1,0 +1,17 @@
+pkgbase = ocat-nightly-bin
+	pkgdesc = View opencode session exports in a pager — nightly build
+	pkgver = 20260804
+	pkgrel = 1
+	url = https://github.com/someoneonsmile/ocat
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	provides = ocat
+	conflicts = ocat
+	conflicts = ocat-bin
+	source_x86_64 = https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-x86_64-linux-gnu.tar.gz
+	sha256sums_x86_64 = SKIP
+	source_aarch64 = https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-aarch64-linux-gnu.tar.gz
+	sha256sums_aarch64 = SKIP
+
+pkgname = ocat-nightly-bin

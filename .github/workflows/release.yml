@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v6
+        with:
+          mode: COMMIT
+          toTag: ${{ github.ref_name }}
+          configurationJson: |
+            {
+              "label_extractor": [
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(!)?: (.+)",
+                  "on_property": "title",
+                  "target": "$1"
+                }
+              ],
+              "categories": [
+                { "title": "## 🚀 新功能", "labels": ["feat", "feature"] },
+                { "title": "## 🐛 修复", "labels": ["fix", "bugfix", "bug"] },
+                { "title": "## 📚 文档", "labels": ["docs", "documentation"] },
+                { "title": "## ⚡ 性能", "labels": ["perf", "performance"] },
+                { "title": "## 🔧 维护", "labels": ["chore", "refactor", "ci", "test", "build", "revert", "style", "deps"] },
+                { "title": "## 其他变更", "labels": ["*"] }
+              ]
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old versioned release (in case tag was moved)
+        run: gh release delete ${{ github.ref_name }} --yes || true
+
+      - name: Publish versioned release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          body: ${{ steps.changelog.outputs.changelog }}
+
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Update PKGBUILD version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' aur/PKGBUILD
+
+      - name: Regenerate .SRCINFO
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "${{ github.workspace }}/aur:/work" \
+            -w /work \
+            archlinux:latest \
+            makepkg --printsrcinfo > aur/.SRCINFO
+
+      - name: Configure SSH for AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur_key
+          chmod 600 ~/.ssh/aur_key
+          cat >> ~/.ssh/config << 'SSHEOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur_key
+            StrictHostKeyChecking accept-new
+          SSHEOF
+          chmod 600 ~/.ssh/config
+
+      - name: Push to AUR
+        run: |
+          VERSION="${{ github.ref_name }}"
+          git add aur/
+          git commit -m "chore: update AUR to ${VERSION}" || echo "No changes to commit"
+          git remote add aur ssh://aur@aur.archlinux.org/ocat-bin.git
+          git subtree push --prefix=aur aur master

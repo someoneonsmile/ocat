@@ -1,0 +1,162 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      date: ${{ steps.vars.outputs.date }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute nightly version vars
+        id: vars
+        run: |
+          echo "date=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for changes since last nightly
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NIGHTLY_SHA=$(gh api repos/${{ github.repository }}/git/ref/tags/nightly \
+            --jq '.object.sha' 2>/dev/null) || true
+
+          if [ -n "$NIGHTLY_SHA" ]; then
+            if [ "$NIGHTLY_SHA" = "${{ github.sha }}" ]; then
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              echo "No changes since last nightly, skipping."
+            else
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "First nightly build."
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      version_suffix: -nightly.${{ needs.check.outputs.date }}.${{ needs.check.outputs.short_sha }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Get latest stable release tag
+        id: latest
+        run: |
+          TAG=$(gh release list --exclude-pre-releases --limit 1 --json tagName -q '.[0].tagName')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v6
+        with:
+          mode: COMMIT
+          fromTag: ${{ steps.latest.outputs.tag }}
+          toTag: ${{ github.sha }}
+          configurationJson: |
+            {
+              "label_extractor": [
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(!)?: (.+)",
+                  "on_property": "title",
+                  "target": "$1"
+                }
+              ],
+              "categories": [
+                { "title": "## 🚀 新功能", "labels": ["feat", "feature"] },
+                { "title": "## 🐛 修复", "labels": ["fix", "bugfix", "bug"] },
+                { "title": "## 📚 文档", "labels": ["docs", "documentation"] },
+                { "title": "## ⚡ 性能", "labels": ["perf", "performance"] },
+                { "title": "## 🔧 维护", "labels": ["chore", "refactor", "ci", "test", "build", "revert", "style", "deps"] },
+                { "title": "## 其他变更", "labels": ["*"] }
+              ]
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old nightly rolling release
+        run: gh release delete nightly --cleanup-tag --yes || true
+
+      - name: Publish nightly rolling release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: nightly
+          files: dist/*
+          prerelease: true
+          body: ${{ steps.changelog.outputs.changelog }}
+
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Update PKGBUILD version
+        run: |
+          DATE="$(date +%Y%m%d)"
+          sed -i "s/^pkgver=.*/pkgver=${DATE}/" aur-nightly/PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' aur-nightly/PKGBUILD
+
+      - name: Regenerate .SRCINFO
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "${{ github.workspace }}/aur-nightly:/work" \
+            -w /work \
+            archlinux:latest \
+            makepkg --printsrcinfo > aur-nightly/.SRCINFO
+
+      - name: Configure SSH for AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur_key
+          chmod 600 ~/.ssh/aur_key
+          cat >> ~/.ssh/config << 'SSHEOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur_key
+            StrictHostKeyChecking accept-new
+          SSHEOF
+          chmod 600 ~/.ssh/config
+
+      - name: Push to AUR nightly
+        run: |
+          DATE="$(date +%Y%m%d)"
+          git add aur-nightly/
+          git commit -m "chore: update nightly AUR to ${DATE}" || echo "No changes to commit"
+          git remote add aur-nightly ssh://aur@aur.archlinux.org/ocat-nightly-bin.git
+          git subtree push --prefix=aur-nightly aur-nightly master
