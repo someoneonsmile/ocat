@@ -3,6 +3,7 @@ use std::io::Write;
 use chrono::Local;
 use chrono::TimeZone;
 use termcolor::{Buffer, Color, ColorSpec, WriteColor};
+use termimad::MadSkin;
 
 use crate::types::*;
 
@@ -107,6 +108,11 @@ impl Buf {
 
     fn writeln(&mut self, text: &str) {
         self.write_reset(&format!("{text}\n"));
+    }
+
+    /// 直接写入原始字节（保留已有的 ANSI 转义序列），用于 termimad 渲染后的文本。
+    fn write_raw(&mut self, text: &str) {
+        write!(self.inner, "{text}").ok();
     }
 
     fn into_string(self) -> String {
@@ -228,12 +234,12 @@ fn render_message(buf: &mut Buf, msg: &Message) {
 fn render_part(buf: &mut Buf, part: &Part) {
     match part {
         Part::Text { text, .. } => {
-            for line in text.lines() {
+            let skin = MadSkin::default();
+            // 宽度 78 = 终端 80 列 - 前缀 "│ " 占 2 列
+            let rendered = skin.text(text, Some(78));
+            for line in rendered.to_string().lines() {
                 buf.write_dim("│");
-                if !line.is_empty() {
-                    buf.write_reset(&format!(" {line}"));
-                }
-                buf.writeln("");
+                buf.write_raw(&format!(" {line}\n"));
             }
         }
         Part::Reasoning { text, .. } => {
