@@ -9,9 +9,9 @@ pkgbase = ocat-nightly-bin
 	provides = ocat
 	conflicts = ocat
 	conflicts = ocat-bin
-	source_x86_64 = https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-x86_64-linux-gnu.tar.gz
+	source_x86_64 = ocat-20260804-x86_64-linux-gnu.tar.gz::https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-x86_64-linux-gnu.tar.gz
 	sha256sums_x86_64 = SKIP
-	source_aarch64 = https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-aarch64-linux-gnu.tar.gz
+	source_aarch64 = ocat-20260804-aarch64-linux-gnu.tar.gz::https://github.com/someoneonsmile/ocat/releases/download/nightly/ocat-aarch64-linux-gnu.tar.gz
 	sha256sums_aarch64 = SKIP
 
 pkgname = ocat-nightly-bin
