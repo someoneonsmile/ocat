@@ -2,7 +2,7 @@
 pkgname=ocat-bin
 provides=('ocat')
 conflicts=('ocat')
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="View opencode session exports in a pager"
 arch=('x86_64' 'aarch64')
