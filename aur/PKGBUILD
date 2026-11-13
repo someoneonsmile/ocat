@@ -8,6 +8,7 @@ pkgdesc="View opencode session exports in a pager"
 arch=('x86_64' 'aarch64')
 url="https://github.com/someoneonsmile/ocat"
 license=('MIT')
+options=('!strip' '!debug')
 
 _source_base="${url}/releases/download/v${pkgver}"
 
